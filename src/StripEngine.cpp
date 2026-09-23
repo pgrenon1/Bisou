@@ -8,9 +8,7 @@ void StripEngine::begin()
 
   pinMode(StripEngineConfig::LeftButtonPin, INPUT_PULLUP);
   pinMode(StripEngineConfig::RightButtonPin, INPUT_PULLUP);
-
-  randomSeed(analogRead(A0));
-
+  randomSeed(analogRead(StripEngineConfig::RandomSeedPin));
   clear();
   show();
 }

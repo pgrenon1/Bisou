@@ -24,7 +24,7 @@ class Game {
   virtual void onMounted() {}
   virtual void onUnmounted() {}
 
- private:
+ protected:
   // Non-owning: valid only between onMount() and onUnmount().
   StripEngine* engine_ = nullptr;
 };
