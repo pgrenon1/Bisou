@@ -6,6 +6,7 @@
 void BisouGame::onMounted()
 {
   resetGame();
+  engine().log("Bisou game ready");
 }
 
 void BisouGame::resetGame()
@@ -55,11 +56,13 @@ void BisouGame::handleInput()
   {
     leftPulseActive_ = true;
     leftPulsePosition_ = 0;
+    engine().log("Left pulse launched");
   }
   if (!rightPulseActive_ && engine().buttonIsPressed(StripEngine::Button::Right))
   {
     rightPulseActive_ = true;
     rightPulsePosition_ = engine().ledCount() - 1;
+    engine().log("Right pulse launched");
   }
 }
 
@@ -122,12 +125,14 @@ void BisouGame::handleMiss(int center)
 {
   if (++missStreak_ < maxMissStreak)
   {
+    engine().log("Miss");
     missMarkerActive_ = true;
     missMarkerCenter_ = center;
     missMarkerFrame_ = 0;
   }
   else
   {
+    engine().log("Miss limit reached; progress reset");
     playProgressResetAnimation();
 
     currentTargetZoneSize_ = initialTargetZoneSize;
@@ -143,6 +148,7 @@ void BisouGame::handleMiss(int center)
 // Reward a hit by increasing the target's difficulty and moving it.
 void BisouGame::handleHit()
 {
+  engine().log("Hit");
   missStreak_ = 0;
   playHitAnimation();
 
