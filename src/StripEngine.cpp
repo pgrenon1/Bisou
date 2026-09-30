@@ -37,14 +37,16 @@ void StripEngine::mountGame(Game &game)
   activeGame_ = &game;
   clear();
   activeGame_->onMount(*this);
+  log("Game mounted");
 }
 
-// INPUT_PULLUP buttons read LOW while pressed.
 bool StripEngine::buttonIsPressed(Button button) const
 {
-  const uint8_t pin = button == Button::Left ? StripEngineConfig::LeftButtonPin : StripEngineConfig::RightButtonPin;
-  return digitalRead(pin) == LOW;
 }
+
+
+// Write a complete message to the serial monitor.
+void StripEngine::log(const char* message) const { Serial.println(message); }
 
 // Send the prepared frame to the physical LED strip.
 void StripEngine::show() { FastLED.show(); }
