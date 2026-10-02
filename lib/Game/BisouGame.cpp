@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include "BisouGame.h"
-#include "StripEngine.h"
+#include <StripEngine.h>
 
 // Reset the game whenever it becomes the active game.
 void BisouGame::onMounted()

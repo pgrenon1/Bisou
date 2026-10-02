@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <FastLED.h>
 
-#include "Game.h"
+#include <Game.h>
 #include "StripEngineConfig.h"
 
 class StripEngine {
@@ -18,8 +18,9 @@ class StripEngine {
   bool buttonIsPressed(Button button) const;
   void show();
   void clear();
+  void log(const char* message) const;
 
- private:
+  private:
   CRGB leds_[StripEngineConfig::LedCount];
   Game* activeGame_ = nullptr;
 };

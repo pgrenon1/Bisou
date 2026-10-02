@@ -8,7 +8,7 @@ namespace StripEngineConfig
     template <uint8_t DataPin, EOrder ColorOrder>
     using LedChipset = WS2811<DataPin, ColorOrder>;
     // GPIO numbers for a common ESP32 DevKit board.
-    constexpr uint8_t LedPin = 18;
+    constexpr uint8_t LedPin = 19;
     constexpr uint16_t LedCount = 90;
     constexpr EOrder ColorOrder = RGB;
     constexpr uint8_t LeftButtonPin = 25;

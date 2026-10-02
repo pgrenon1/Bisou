@@ -42,6 +42,11 @@ void StripEngine::mountGame(Game &game)
 
 bool StripEngine::buttonIsPressed(Button button) const
 {
+  const uint8_t pin = button == Button::Left
+    ? StripEngineConfig::LeftButtonPin
+    : StripEngineConfig::RightButtonPin;
+
+  return digitalRead(pin) == LOW;
 }
 
 
