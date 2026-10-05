@@ -5,22 +5,24 @@
 
 #include <Game.h>
 #include "StripEngineConfig.h"
+#include "NodeNetwork.h"
 
 class StripEngine {
  public:
-  enum class Button { Left, Right };
-
   void begin();
   void update();
   void mountGame(Game& game);
+  bool isHomeReady() const;
   CRGB* leds() { return leds_; }
   uint16_t ledCount() const { return StripEngineConfig::LedCount; }
-  bool buttonIsPressed(Button button) const;
+  const NodeNetwork::InputState& homeInputState() const;
+  const NodeNetwork::InputState* remoteInputState(uint8_t remoteIndex) const;
   void show();
   void clear();
-  void log(const char* message) const;
+  bool hasActiveGame();
 
   private:
   CRGB leds_[StripEngineConfig::LedCount];
   Game* activeGame_ = nullptr;
+  NodeNetwork* nodeNetwork_ = nullptr;
 };

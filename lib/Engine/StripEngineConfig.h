@@ -11,8 +11,6 @@ namespace StripEngineConfig
     constexpr uint8_t LedPin = 19;
     constexpr uint16_t LedCount = 90;
     constexpr EOrder ColorOrder = RGB;
-    constexpr uint8_t LeftButtonPin = 25;
-    constexpr uint8_t RightButtonPin = 26;
     // ADC1 input-only pin on common ESP32 DevKit boards; leave unconnected for
     // a noise-based seed. Change this if your board uses GPIO 34 for something else.
     constexpr uint8_t RandomSeedPin = 34;

@@ -19,8 +19,6 @@ class Game {
   virtual void resetGame() = 0;
 
  protected:
-  StripEngine& engine() { return *engine_; }
-
   virtual void onMounted() {}
   virtual void onUnmounted() {}
 

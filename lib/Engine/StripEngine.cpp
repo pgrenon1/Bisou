@@ -3,11 +3,12 @@
 // Configure the LEDs and buttons before a game starts running.
 void StripEngine::begin()
 {
+  nodeNetwork_ = new NodeNetwork();
+  nodeNetwork_->begin();
+
   FastLED.addLeds<StripEngineConfig::LedChipset, StripEngineConfig::LedPin, StripEngineConfig::ColorOrder>(leds_, StripEngineConfig::LedCount);
   FastLED.setBrightness(StripEngineConfig::Brightness);
 
-  pinMode(StripEngineConfig::LeftButtonPin, INPUT_PULLUP);
-  pinMode(StripEngineConfig::RightButtonPin, INPUT_PULLUP);
   randomSeed(analogRead(StripEngineConfig::RandomSeedPin));
   clear();
   show();
@@ -16,6 +17,8 @@ void StripEngine::begin()
 // Run one complete game frame, then send it to the LED strip.
 void StripEngine::update()
 {
+  nodeNetwork_->update();
+
   if (activeGame_ == nullptr)
     return;
 
@@ -25,10 +28,10 @@ void StripEngine::update()
   show();
 }
 
-// Unmount the old game before handing the engine to the new one.
+// A remote node must never mount or execute a game.
 void StripEngine::mountGame(Game &game)
 {
-  if (activeGame_ == &game)
+  if (!isHomeReady() || activeGame_ == &game)
     return;
 
   if (activeGame_ != nullptr)
@@ -37,24 +40,28 @@ void StripEngine::mountGame(Game &game)
   activeGame_ = &game;
   clear();
   activeGame_->onMount(*this);
-  log("Game mounted");
+  Serial.println("Game mounted");
 }
 
-bool StripEngine::buttonIsPressed(Button button) const
+bool StripEngine::isHomeReady() const
 {
-  const uint8_t pin = button == Button::Left
-    ? StripEngineConfig::LeftButtonPin
-    : StripEngineConfig::RightButtonPin;
-
-  return digitalRead(pin) == LOW;
+  return nodeNetwork_ != nullptr && nodeNetwork_->isHomeReady();
 }
 
+const NodeNetwork::InputState& StripEngine::homeInputState() const
+{
+  return nodeNetwork_->homeInputState();
+}
 
-// Write a complete message to the serial monitor.
-void StripEngine::log(const char* message) const { Serial.println(message); }
+const NodeNetwork::InputState* StripEngine::remoteInputState(uint8_t remoteIndex) const
+{
+  return nodeNetwork_->remoteInputState(remoteIndex);
+}
 
 // Send the prepared frame to the physical LED strip.
 void StripEngine::show() { FastLED.show(); }
 
 // Reset every LED to black before drawing a new scene.
 void StripEngine::clear() { fill_solid(leds_, StripEngineConfig::LedCount, CRGB::Black); }
+
+bool StripEngine::hasActiveGame() { activeGame_ != nullptr; }

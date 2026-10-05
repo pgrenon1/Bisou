@@ -12,11 +12,18 @@ void setup()
   Serial.begin(115200);
   otaProgrammer.begin();
   engine.begin();
-  engine.mountGame(bisouGame);
+
+  Serial.println(ESP.getChipModel());
 }
 
 void loop()
 {
   otaProgrammer.update();
   engine.update();
+
+  // Wait for pairing and role detection before allowing the home to run the game.
+  if (engine.isHomeReady() && !engine.hasActiveGame())
+  {
+    engine.mountGame(bisouGame);
+  }
 }

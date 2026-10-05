@@ -14,7 +14,7 @@ void OTA::begin()
   delay(100);
 
   // Stop here when the AP cannot start; ArduinoOTA cannot accept uploads without it.
-  if (!WiFi.softAP(OTAConfig::AccessPointSsid, OTAConfig::AccessPointPassword))
+  if (!WiFi.softAP(OTAConfig::AccessPointSsid, OTAConfig::AccessPointPassword, OTAConfig::WifiChannel))
   {
     Serial.println("OTA access point failed to start");
     return;

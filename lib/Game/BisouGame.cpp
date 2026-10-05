@@ -6,7 +6,7 @@
 void BisouGame::onMounted()
 {
   resetGame();
-  engine().log("Bisou game ready");
+  Serial.println("Bisou game ready");
 }
 
 void BisouGame::resetGame()
@@ -38,7 +38,7 @@ void BisouGame::render()
 // Choose a new target location while keeping it away from strip endpoints.
 void BisouGame::relocateTargetZone()
 {
-  targetZoneStart_ = random(targetZoneEdgeMargin, engine().ledCount() - currentTargetZoneSize_ - targetZoneEdgeMargin + 1);
+  targetZoneStart_ = random(targetZoneEdgeMargin, engine_->ledCount() - currentTargetZoneSize_ - targetZoneEdgeMargin + 1);
   targetZoneEnd_ = targetZoneStart_ + currentTargetZoneSize_ - 1;
 }
 
@@ -52,17 +52,19 @@ void BisouGame::removePulses()
 // Launch a pulse from an endpoint when its matching button is pressed.
 void BisouGame::handleInput()
 {
-  if (!leftPulseActive_ && engine().buttonIsPressed(StripEngine::Button::Left))
+  if (!leftPulseActive_ && engine_->homeInputState().buttonPressed)
   {
     leftPulseActive_ = true;
     leftPulsePosition_ = 0;
-    engine().log("Left pulse launched");
+    Serial.println("Left pulse launched");
   }
-  if (!rightPulseActive_ && engine().buttonIsPressed(StripEngine::Button::Right))
+  // The first paired remote launches the pulse from the right endpoint.
+  const NodeNetwork::InputState* remoteInput = engine_->remoteInputState(0);
+  if (!rightPulseActive_ && remoteInput != nullptr && remoteInput->buttonPressed)
   {
     rightPulseActive_ = true;
-    rightPulsePosition_ = engine().ledCount() - 1;
-    engine().log("Right pulse launched");
+    rightPulsePosition_ = engine_->ledCount() - 1;
+    Serial.println("Right pulse launched");
   }
 }
 
@@ -84,7 +86,7 @@ void BisouGame::movePulses()
   if (leftPulseActive_ && rightPulseActive_ && leftPulsePosition_ >= rightPulsePosition_)
     checkCollision();
 
-  if (leftPulsePosition_ >= static_cast<int>(engine().ledCount()))
+  if (leftPulsePosition_ >= static_cast<int>(engine_->ledCount()))
     leftPulseActive_ = false;
   if (rightPulsePosition_ < 0)
     rightPulseActive_ = false;
@@ -93,9 +95,9 @@ void BisouGame::movePulses()
 // Dim the previous frame without allowing the strip to become fully dark.
 void BisouGame::fadeBackground()
 {
-  CRGB *leds = engine().leds();
+  CRGB *leds = engine_->leds();
 
-  for (uint16_t i = 0; i < engine().ledCount(); ++i)
+  for (uint16_t i = 0; i < engine_->ledCount(); ++i)
   {
     leds[i].fadeToBlackBy(10);
 
@@ -125,14 +127,14 @@ void BisouGame::handleMiss(int center)
 {
   if (++missStreak_ < maxMissStreak)
   {
-    engine().log("Miss");
+    Serial.println("Miss");
     missMarkerActive_ = true;
     missMarkerCenter_ = center;
     missMarkerFrame_ = 0;
   }
   else
   {
-    engine().log("Miss limit reached; progress reset");
+    Serial.println("Miss limit reached; progress reset");
     playProgressResetAnimation();
 
     currentTargetZoneSize_ = initialTargetZoneSize;
@@ -148,7 +150,7 @@ void BisouGame::handleMiss(int center)
 // Reward a hit by increasing the target's difficulty and moving it.
 void BisouGame::handleHit()
 {
-  engine().log("Hit");
+  Serial.println("Hit");
   missStreak_ = 0;
   playHitAnimation();
 
@@ -166,7 +168,7 @@ void BisouGame::handleHit()
 // Render target, idle endpoints, and active pulses onto the LED buffer.
 void BisouGame::drawScene()
 {
-  CRGB *leds = engine().leds();
+  CRGB *leds = engine_->leds();
   const uint8_t zone = beatsin8(currentTargetZoneBreathingRate_, targetZoneMinBrightness, 255);
 
   // The target's brightness oscillates while its hue remains yellow.
@@ -177,12 +179,12 @@ void BisouGame::drawScene()
   if (!leftPulseActive_)
     leds[0] = CRGB(beatsin8(leftEndpointGlowRate, leftEndpointMinBrightness, 255));
   if (!rightPulseActive_)
-    leds[engine().ledCount() - 1] = CRGB(beatsin8(rightEndpointGlowRate, rightEndpointMinBrightness, 255));
+    leds[engine_->ledCount() - 1] = CRGB(beatsin8(rightEndpointGlowRate, rightEndpointMinBrightness, 255));
 
   // Bounds checks prevent drawing a pulse that moved off the strip this frame.
-  if (leftPulseActive_ && leftPulsePosition_ >= 0 && leftPulsePosition_ < static_cast<int>(engine().ledCount()))
+  if (leftPulseActive_ && leftPulsePosition_ >= 0 && leftPulsePosition_ < static_cast<int>(engine_->ledCount()))
     leds[leftPulsePosition_] = CRGB::White;
-  if (rightPulseActive_ && rightPulsePosition_ >= 0 && rightPulsePosition_ < static_cast<int>(engine().ledCount()))
+  if (rightPulseActive_ && rightPulsePosition_ >= 0 && rightPulsePosition_ < static_cast<int>(engine_->ledCount()))
     leds[rightPulsePosition_] = CRGB::White;
 }
 
@@ -192,14 +194,14 @@ void BisouGame::updateMissMarker()
   if (!missMarkerActive_)
     return;
 
-  CRGB *leds = engine().leds();
+  CRGB *leds = engine_->leds();
 
   for (int o = -1; o <= 1; ++o)
   {
     const int p = missMarkerCenter_ + o;
 
     // Clip the marker when the collision was near either strip edge.
-    if (p >= 0 && p < static_cast<int>(engine().ledCount()))
+    if (p >= 0 && p < static_cast<int>(engine_->ledCount()))
       leds[p] = CRGB::Red;
   }
 
@@ -210,34 +212,34 @@ void BisouGame::updateMissMarker()
 // Play the green confirmation animation after a successful collision.
 void BisouGame::playHitAnimation()
 {
-  CRGB *leds = engine().leds();
+  CRGB *leds = engine_->leds();
 
   // Fade in to bright green, settle at a dimmer green, then fade out.
   for (int i = 0; i <= 10; ++i)
   {
-    fill_solid(leds, engine().ledCount(), CRGB(0, 255L * i / 10, 0));
-    engine().show();
+    fill_solid(leds, engine_->ledCount(), CRGB(0, 255L * i / 10, 0));
+    engine_->show();
     delay(20);
   }
 
   for (int i = 0; i <= 10; ++i)
   {
-    fill_solid(leds, engine().ledCount(), CRGB(0, 255 - (191L * i / 10), 0));
-    engine().show();
+    fill_solid(leds, engine_->ledCount(), CRGB(0, 255 - (191L * i / 10), 0));
+    engine_->show();
     delay(20);
   }
 
   for (int i = 0; i <= 15; ++i)
   {
-    fill_solid(leds, engine().ledCount(), CRGB(0, 64 + (191L * i / 15), 0));
-    engine().show();
+    fill_solid(leds,engine_->ledCount(), CRGB(0, 64 + (191L * i / 15), 0));
+    engine_->show();
     delay(20);
   }
 
   for (int i = 0; i <= 30; ++i)
   {
-    fill_solid(leds, engine().ledCount(), CRGB(0, 255 - (255L * i / 30), 0));
-    engine().show();
+    fill_solid(leds, engine_->ledCount(), CRGB(0, 255 - (255L * i / 30), 0));
+    engine_->show();
     delay(20);
   }
 }
@@ -249,8 +251,8 @@ void BisouGame::playProgressResetAnimation()
   {
     // Alternate two bright frames with two dim frames.
     const uint8_t b = i % 4 < 2 ? 255 : 50;
-    fill_solid(engine().leds(), engine().ledCount(), CRGB(b, 0, 0));
-    engine().show();
+    fill_solid(engine_->leds(), engine_->ledCount(), CRGB(b, 0, 0));
+    engine_->show();
     delay(40);
   }
 }
