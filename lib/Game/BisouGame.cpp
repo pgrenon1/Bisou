@@ -1,12 +1,14 @@
 #include <Arduino.h>
 #include "BisouGame.h"
 #include <StripEngine.h>
+#include <WebConsole.h>
 
 // Reset the game whenever it becomes the active game.
 void BisouGame::onMounted()
 {
   resetGame();
-  Serial.println("Bisou game ready");
+  started_ = false;
+  Console.println("Bisou game mounted; waiting for remote node");
 }
 
 void BisouGame::resetGame()
@@ -22,10 +24,25 @@ void BisouGame::resetGame()
 // Advance input, pulse positions, and the fading background each frame.
 void BisouGame::update()
 {
+  if (!started_ && !tryStart())
+    return;
+
   handleInput();
 
   movePulses();
   fadeBackground();
+}
+
+// Start only after every player node needed by this game has joined.
+bool BisouGame::tryStart()
+{
+  if (engine_->remoteCount() < requiredRemoteCount)
+    return false;
+
+  engine_->completePairing();
+  started_ = true;
+  Console.println("Bisou game ready");
+  return true;
 }
 
 // Draw the current game state after the frame has been updated.
@@ -56,7 +73,7 @@ void BisouGame::handleInput()
   {
     leftPulseActive_ = true;
     leftPulsePosition_ = 0;
-    Serial.println("Left pulse launched");
+    Console.println("Home pulse launched");
   }
   // The first paired remote launches the pulse from the right endpoint.
   const NodeNetwork::InputState* remoteInput = engine_->remoteInputState(0);
@@ -64,7 +81,7 @@ void BisouGame::handleInput()
   {
     rightPulseActive_ = true;
     rightPulsePosition_ = engine_->ledCount() - 1;
-    Serial.println("Right pulse launched");
+    Console.println("Remote pulse launched");
   }
 }
 
@@ -127,14 +144,14 @@ void BisouGame::handleMiss(int center)
 {
   if (++missStreak_ < maxMissStreak)
   {
-    Serial.println("Miss");
+    Console.println("Miss");
     missMarkerActive_ = true;
     missMarkerCenter_ = center;
     missMarkerFrame_ = 0;
   }
   else
   {
-    Serial.println("Miss limit reached; progress reset");
+    Console.println("Miss limit reached; progress reset");
     playProgressResetAnimation();
 
     currentTargetZoneSize_ = initialTargetZoneSize;
@@ -150,7 +167,7 @@ void BisouGame::handleMiss(int center)
 // Reward a hit by increasing the target's difficulty and moving it.
 void BisouGame::handleHit()
 {
-  Serial.println("Hit");
+  Console.println("Hit");
   missStreak_ = 0;
   playHitAnimation();
 
@@ -177,9 +194,15 @@ void BisouGame::drawScene()
 
   // An idle endpoint pulses to show where the next launch can originate.
   if (!leftPulseActive_)
-    leds[0] = CRGB(beatsin8(leftEndpointGlowRate, leftEndpointMinBrightness, 255));
+  {
+    const uint8_t brightness = beatsin8(leftEndpointGlowRate, leftEndpointMinBrightness, 255);
+    leds[0] = CRGB(brightness, brightness, brightness);
+  }
   if (!rightPulseActive_)
-    leds[engine_->ledCount() - 1] = CRGB(beatsin8(rightEndpointGlowRate, rightEndpointMinBrightness, 255));
+  {
+    const uint8_t brightness = beatsin8(rightEndpointGlowRate, rightEndpointMinBrightness, 255);
+    leds[engine_->ledCount() - 1] = CRGB(brightness, brightness, brightness);
+  }
 
   // Bounds checks prevent drawing a pulse that moved off the strip this frame.
   if (leftPulseActive_ && leftPulsePosition_ >= 0 && leftPulsePosition_ < static_cast<int>(engine_->ledCount()))

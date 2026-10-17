@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Arduino.h>
+
 // Provides wireless firmware updates through the ESP32's own Wi-Fi network.
 //
 // begin() creates the access point configured in OTAConfig.h. A phone
@@ -19,5 +21,6 @@ class OTA
   void update();
 
  private:
+  String GetSSID() const;
   bool started_ = false;
 };

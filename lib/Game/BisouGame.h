@@ -10,6 +10,8 @@ class BisouGame : public Game {
 
  private:
      void onMounted() override;
+     bool tryStart();
+     static constexpr uint8_t requiredRemoteCount = 1;
      static constexpr uint8_t backgroundBrightness = 2, initialTargetZoneBreathingRate = 28;
      static constexpr uint8_t targetZoneMinBrightness = 60, leftEndpointGlowRate = 30, leftEndpointMinBrightness = 100;
      static constexpr uint8_t rightEndpointGlowRate = 32, rightEndpointMinBrightness = 100;
@@ -22,6 +24,7 @@ class BisouGame : public Game {
      int currentTargetZoneBreathingRate_ = initialTargetZoneBreathingRate, missStreak_ = 0;
      unsigned long lastPulseMoveTime_ = 0;
      bool missMarkerActive_ = false;
+     bool started_ = false;
      int missMarkerCenter_ = 0, missMarkerFrame_ = 0;
      void relocateTargetZone();
      void removePulses();

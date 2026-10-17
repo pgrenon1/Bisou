@@ -4,11 +4,14 @@
 #include <Button2.h>
 #include <esp_idf_version.h>
 #include <esp_now.h>
+#include "PairingStateMachine.h"
 #include "NodeNetworkConfig.h"
 
 // Connects one home node to multiple remote nodes over ESP-NOW.
 class NodeNetwork
 {
+  friend class PairingStateMachine;
+
  public:
   enum class Role : uint8_t { Unconfigured, Home, Remote };
 
@@ -28,9 +31,11 @@ class NodeNetwork
   void update();
   void setEventHandler(EventHandler handler) { eventHandler_ = handler; }
 
-  Role role() const { return storedRole_; }
+  Role role() const { return role_; }
+  bool isHome() const { return role_ == Role::Home; }
   bool isPairing() const;
   bool isHomeReady() const;
+  void completePairing();
   uint8_t remoteCount() const;
   const InputState& homeInputState() const { return homeInputState_; }
   const InputState* remoteInputState(uint8_t remoteIndex) const;
@@ -40,12 +45,9 @@ class NodeNetwork
   void broadcastFromHome(uint8_t eventType, const uint8_t* payload, uint8_t payloadLength);
 
  private:
-  enum class State : uint8_t { CheckingBootHold, Normal, SeekingHome, HomePairing };
   enum class PacketType : uint8_t { HomeAdvertisement = 1, PairRequest, PairAccepted, Event };
-
-  struct PairingStorage
+  struct PeerState
   {
-    uint8_t role;
     uint8_t remoteCount;
     uint8_t homeMac[6];
     struct RemoteNode
@@ -53,6 +55,13 @@ class NodeNetwork
       uint8_t mac[6];
       InputState inputState;
     } remoteNodes[NodeNetworkConfig::MaxRemoteNodes];
+  };
+
+  // Persist only a completed pairing role and the ESP-NOW peers needed to restore it.
+  struct PairingStorage
+  {
+    uint8_t role;
+    PeerState peerState;
   };
 
   struct PacketHeader
@@ -80,14 +89,14 @@ class NodeNetwork
   static constexpr uint8_t ReceiveQueueSize = 8;
   static constexpr uint8_t InputStateEventType = 1;
 
-  PairingStorage storage_ = {};
+  PeerState peerState_ = {};
   InputState homeInputState_ = InputState(true, false);
   InputState remoteLocalInputState_ = InputState(true, false);
   Button2 inputButton_;
+  Button2 pairingButton_;
   bool debouncedInputPressed_ = false;
   bool remoteInputStateSent_ = false;
-  Role storedRole_ = Role::Unconfigured;
-  State state_ = State::CheckingBootHold;
+  Role role_ = Role::Unconfigured;
   bool bootHoldActive_ = false;
   uint32_t bootCheckStartedAt_ = 0;
   uint32_t pairingStartedAt_ = 0;
@@ -100,13 +109,23 @@ class NodeNetwork
   bool started_ = false;
   EventHandler eventHandler_ = nullptr;
 
-  void loadStorage();
-  void saveStorage() const;
-  void clearPairingStorage();
-  void addStoredPeers();
+  PairingStateMachine pairingStateMachine_;
+
+  void setupInputButton();
+  void setupPairingButton();
+  void setupPairingStateMachine();
+  void updateButtons();
+  void processReceivedPackets();
+  void updatePairingStateMachine();
   void startPairing();
+  void completeBootCheck();
   void becomeHome();
   void finishRemotePairing(const uint8_t homeMac[6]);
+  void finishPairingWindow();
+  bool loadPairingStorage();
+  bool savePairingStorage() const;
+  void clearPairingStorage();
+  bool addStoredPeers();
   void sendHomeAdvertisement();
   void updateLocalInputState();
   void updateRemoteInputState(const uint8_t sourceMac[6], bool buttonPressed);
@@ -118,6 +137,7 @@ class NodeNetwork
   bool addEspNowPeer(const uint8_t mac[6]);
   bool isKnownRemote(const uint8_t mac[6]) const;
   bool isSelectedHome(const uint8_t mac[6]) const;
+  bool sameMac(const uint8_t left[6], const uint8_t right[6]) const;
   bool canSendEvent(const uint8_t* payload, uint8_t payloadLength) const;
   bool sendEvent(const uint8_t destinationMac[6], uint8_t eventType,
                  const uint8_t* payload, uint8_t payloadLength);

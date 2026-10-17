@@ -12,7 +12,10 @@ class StripEngine {
   void begin();
   void update();
   void mountGame(Game& game);
+  bool isHome() const;
   bool isHomeReady() const;
+  uint8_t remoteCount() const;
+  void completePairing();
   CRGB* leds() { return leds_; }
   uint16_t ledCount() const { return StripEngineConfig::LedCount; }
   const NodeNetwork::InputState& homeInputState() const;

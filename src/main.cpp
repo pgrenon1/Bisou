@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <OTA.h>
+#include <WebConsole.h>
 #include <BisouGame.h>
 #include <StripEngine.h>
 
@@ -10,10 +11,15 @@ OTA otaProgrammer;
 void setup()
 {
   Serial.begin(115200);
+
+  Console.println("===============================================");
+  Console.println("Boot sequence started");
+
+  Console.print("ChipModel: ");
+  Console.println(ESP.getChipModel());
+
   otaProgrammer.begin();
   engine.begin();
-
-  Serial.println(ESP.getChipModel());
 }
 
 void loop()
@@ -21,8 +27,8 @@ void loop()
   otaProgrammer.update();
   engine.update();
 
-  // Wait for pairing and role detection before allowing the home to run the game.
-  if (engine.isHomeReady() && !engine.hasActiveGame())
+  // Mount as soon as the node becomes home; mounting ends its pairing window.
+  if (engine.isHome() && !engine.hasActiveGame())
   {
     engine.mountGame(bisouGame);
   }

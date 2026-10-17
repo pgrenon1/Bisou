@@ -1,4 +1,5 @@
 #include "StripEngine.h"
+#include <WebConsole.h>
 
 // Configure the LEDs and buttons before a game starts running.
 void StripEngine::begin()
@@ -31,7 +32,7 @@ void StripEngine::update()
 // A remote node must never mount or execute a game.
 void StripEngine::mountGame(Game &game)
 {
-  if (!isHomeReady() || activeGame_ == &game)
+  if (!isHome() || activeGame_ == &game)
     return;
 
   if (activeGame_ != nullptr)
@@ -40,12 +41,29 @@ void StripEngine::mountGame(Game &game)
   activeGame_ = &game;
   clear();
   activeGame_->onMount(*this);
-  Serial.println("Game mounted");
+  Console.println("Game mounted");
+}
+
+bool StripEngine::isHome() const
+{
+  return nodeNetwork_ != nullptr && nodeNetwork_->isHome();
 }
 
 bool StripEngine::isHomeReady() const
 {
   return nodeNetwork_ != nullptr && nodeNetwork_->isHomeReady();
+}
+
+
+uint8_t StripEngine::remoteCount() const
+{
+  return nodeNetwork_ == nullptr ? 0 : nodeNetwork_->remoteCount();
+}
+
+void StripEngine::completePairing()
+{
+  if (nodeNetwork_ != nullptr)
+    nodeNetwork_->completePairing();
 }
 
 const NodeNetwork::InputState& StripEngine::homeInputState() const
@@ -64,4 +82,4 @@ void StripEngine::show() { FastLED.show(); }
 // Reset every LED to black before drawing a new scene.
 void StripEngine::clear() { fill_solid(leds_, StripEngineConfig::LedCount, CRGB::Black); }
 
-bool StripEngine::hasActiveGame() { activeGame_ != nullptr; }
+bool StripEngine::hasActiveGame() { return activeGame_ != nullptr; }

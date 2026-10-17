@@ -6,32 +6,22 @@
 #include <esp_wifi.h>
 
 #include <OTAConfig.h>
+#include <WebConsole.h>
 
 NodeNetwork* NodeNetwork::instance_ = nullptr;
 
 namespace
 {
-  constexpr char StorageNamespace[] = "node-network";
-  constexpr char StorageKey[] = "pairing";
-
-  // Compare MAC addresses without converting them to temporary strings.
-  bool sameMac(const uint8_t left[6], const uint8_t right[6])
-  {
-    return memcmp(left, right, 6) == 0;
-  }
+  constexpr char PairingStorageNamespace[] = "node-network";
+  constexpr char PairingStorageKey[] = "pairing";
 }
 
 void NodeNetwork::begin()
 {
-  inputButton_.begin(NodeNetworkConfig::InputButtonPin);
-  inputButton_.setDebounceTime(NodeNetworkConfig::InputDebounceTimeMs);
-  inputButton_.setContext(this);
-  inputButton_.setPressedHandler(inputPressedHandler);
-  inputButton_.setReleasedHandler(inputReleasedHandler);
+  setupInputButton();
+  setupPairingButton();
   pinMode(NodeNetworkConfig::StatusLedPin, OUTPUT);
   digitalWrite(NodeNetworkConfig::StatusLedPin, LOW);
-  bootHoldActive_ = inputButton_.isPressed();
-  bootCheckStartedAt_ = millis();
 
   // OTA starts Wi-Fi first; keep ESP-NOW on that same station interface and channel.
   WiFi.mode(WIFI_AP_STA);
@@ -40,15 +30,14 @@ void NodeNetwork::begin()
 
   if (esp_now_init() != ESP_OK)
   {
-    Serial.println("ESP-NOW initialization failed");
+    Console.println("ESP-NOW initialization failed");
     return;
   }
 
   instance_ = this;
   esp_now_register_recv_cb(receiveCallback);
-  loadStorage();
+  setupPairingStateMachine();
   started_ = true;
-  Serial.println("ESP-NOW ready; checking pairing button");
 }
 
 void NodeNetwork::update()
@@ -56,91 +45,104 @@ void NodeNetwork::update()
   if (!started_)
     return;
 
-  inputButton_.loop();
+  updateButtons();
+  processReceivedPackets();
+  updatePairingStateMachine();
+  updateLocalInputState();
+  updateStatusLed();
+}
 
-  // A release at any time during the boot check cancels the pairing gesture.
-  if (state_ == State::CheckingBootHold)
+void NodeNetwork::setupInputButton()
+{
+  inputButton_.begin(NodeNetworkConfig::InputButtonPin);
+  inputButton_.setDebounceTime(NodeNetworkConfig::InputDebounceTimeMs);
+  inputButton_.setContext(this);
+  inputButton_.setPressedHandler(inputPressedHandler);
+  inputButton_.setReleasedHandler(inputReleasedHandler);
+}
+
+void NodeNetwork::setupPairingButton()
+{
+  pairingButton_.begin(NodeNetworkConfig::PairingButtonPin);
+  pairingButton_.setDebounceTime(NodeNetworkConfig::PairingDebounceTimeMs);
+}
+
+void NodeNetwork::setupPairingStateMachine()
+{
+  if (!pairingStateMachine_.begin())
   {
-    if (!inputButton_.isPressed())
-      bootHoldActive_ = false;
-
-    if (millis() - bootCheckStartedAt_ >= NodeNetworkConfig::PairingHoldDurationMs)
-    {
-      if (bootHoldActive_)
-      {
-        clearPairingStorage();
-        startPairing();
-      }
-      else
-      {
-        addStoredPeers();
-        state_ = State::Normal;
-        Serial.println("Stored pairing restored");
-      }
-    }
+    Console.println("Failed to configure pairing state machine");
+    return;
   }
+}
 
+void NodeNetwork::updateButtons()
+{
+  inputButton_.loop();
+  pairingButton_.loop();
+}
+
+void NodeNetwork::processReceivedPackets()
+{
   QueuedPacket packet;
   while (dequeuePacket(packet))
     handlePacket(packet);
+}
 
-  updateLocalInputState();
-
-  if (isPairing() && millis() - pairingStartedAt_ >= NodeNetworkConfig::PairingWindowDurationMs)
-  {
-    state_ = State::Normal;
-    Serial.println("Pairing window ended");
-  }
-
-  if (state_ == State::SeekingHome && millis() - pairingStartedAt_ >= NodeNetworkConfig::HomeDiscoveryDurationMs)
-    becomeHome();
-
-  if (state_ == State::HomePairing && millis() - lastHomeAdvertisementAt_ >= NodeNetworkConfig::HomeAdvertisementIntervalMs)
-    sendHomeAdvertisement();
-
-  updateStatusLed();
+void NodeNetwork::updatePairingStateMachine()
+{
+  pairingStateMachine_.update();
 }
 
 bool NodeNetwork::isPairing() const
 {
-  return state_ == State::SeekingHome || state_ == State::HomePairing;
+  return pairingStateMachine_.isPairing();
 }
 
 bool NodeNetwork::isHomeReady() const
 {
-  return storedRole_ == Role::Home && state_ == State::Normal;
+  return role_ == Role::Home && pairingStateMachine_.isPairedHome();
+}
+
+void NodeNetwork::completePairing()
+{
+  if (role_ != Role::Home || peerState_.remoteCount == 0 || !pairingStateMachine_.isHomePairing())
+    return;
+
+  pairingStateMachine_.completePairing();
+  savePairingStorage();
 }
 
 uint8_t NodeNetwork::remoteCount() const
 {
-  return storedRole_ == Role::Home ? storage_.remoteCount : 0;
+  return role_ == Role::Home ? peerState_.remoteCount : 0;
 }
 
 const NodeNetwork::InputState* NodeNetwork::remoteInputState(uint8_t remoteIndex) const
 {
-  if (storedRole_ != Role::Home || remoteIndex >= storage_.remoteCount)
+  if (role_ != Role::Home || remoteIndex >= peerState_.remoteCount)
     return nullptr;
 
-  return &storage_.remoteNodes[remoteIndex].inputState;
+  return &peerState_.remoteNodes[remoteIndex].inputState;
 }
 
 bool NodeNetwork::sendToHome(uint8_t eventType, const uint8_t* payload, uint8_t payloadLength)
 {
-  if (storedRole_ != Role::Remote || !canSendEvent(payload, payloadLength))
+  if (role_ != Role::Remote || !canSendEvent(payload, payloadLength))
   {
-    Serial.println("Unable to send event to home");
+    Console.println("Unable to send event to home");
     return false;
   }
 
-  return sendEvent(storage_.homeMac, eventType, payload, payloadLength);
+  return sendEvent(peerState_.homeMac, eventType, payload, payloadLength);
 }
 
 bool NodeNetwork::sendToRemote(const uint8_t remoteMac[6], uint8_t eventType,
                                const uint8_t* payload, uint8_t payloadLength)
 {
-  if (storedRole_ != Role::Home || !isKnownRemote(remoteMac) || !canSendEvent(payload, payloadLength))
+  if (role_ != Role::Home || !isKnownRemote(remoteMac) || !canSendEvent(payload, payloadLength))
   {
-    Serial.println("Unable to send event to remote");
+    Console.println("Unable to send event to remote");
     return false;
   }
 
@@ -149,99 +151,129 @@ bool NodeNetwork::sendToRemote(const uint8_t remoteMac[6], uint8_t eventType,
 
 void NodeNetwork::broadcastFromHome(uint8_t eventType, const uint8_t* payload, uint8_t payloadLength)
 {
-  if (storedRole_ != Role::Home || !canSendEvent(payload, payloadLength))
+  if (role_ != Role::Home || !canSendEvent(payload, payloadLength))
     return;
 
-  for (uint8_t i = 0; i < storage_.remoteCount; ++i)
-    sendEvent(storage_.remoteNodes[i].mac, eventType, payload, payloadLength);
-}
-
-void NodeNetwork::loadStorage()
-{
-  Preferences preferences;
-  preferences.begin(StorageNamespace, true);
-
-  if (preferences.getBytesLength(StorageKey) == sizeof(storage_))
-    preferences.getBytes(StorageKey, &storage_, sizeof(storage_));
-
-  preferences.end();
-
-  if (storage_.role == static_cast<uint8_t>(Role::Home) && storage_.remoteCount <= NodeNetworkConfig::MaxRemoteNodes)
-  {
-    storedRole_ = Role::Home;
-    Serial.println("Loaded home pairing");
-  }
-  else if (storage_.role == static_cast<uint8_t>(Role::Remote))
-  {
-    storedRole_ = Role::Remote;
-    Serial.println("Loaded remote pairing");
-  }
-  else
-  {
-    storage_ = {};
-    Serial.println("No saved pairing");
-  }
-}
-
-void NodeNetwork::saveStorage() const
-{
-  Preferences preferences;
-  preferences.begin(StorageNamespace, false);
-  preferences.putBytes(StorageKey, &storage_, sizeof(storage_));
-  preferences.end();
-}
-
-void NodeNetwork::clearPairingStorage()
-{
-  // Remove only pairing data; game and other application settings are preserved.
-  Preferences preferences;
-  preferences.begin(StorageNamespace, false);
-  preferences.clear();
-  preferences.end();
-
-  storage_ = {};
-  storedRole_ = Role::Unconfigured;
-  memset(selectedHomeMac_, 0, sizeof(selectedHomeMac_));
-  Serial.println("Pairing data cleared");
-}
-
-void NodeNetwork::addStoredPeers()
-{
-  if (storedRole_ == Role::Remote)
-    addEspNowPeer(storage_.homeMac);
-  else if (storedRole_ == Role::Home)
-    for (uint8_t i = 0; i < storage_.remoteCount; ++i)
-      addEspNowPeer(storage_.remoteNodes[i].mac);
+  for (uint8_t i = 0; i < peerState_.remoteCount; ++i)
+    sendEvent(peerState_.remoteNodes[i].mac, eventType, payload, payloadLength);
 }
 
 void NodeNetwork::startPairing()
 {
-  pairingStartedAt_ = millis();
-  state_ = State::SeekingHome;
-  Serial.println("Searching for a home node");
+  clearPairingStorage();
+  pairingStateMachine_.startPairing();
+}
+
+void NodeNetwork::completeBootCheck()
+{
+  if (loadPairingStorage())
+    return;
+
+  Console.println("No saved pairing");
+  pairingStateMachine_.completeBootCheck();
 }
 
 void NodeNetwork::becomeHome()
 {
-  storage_ = {};
-  storage_.role = static_cast<uint8_t>(Role::Home);
-  storedRole_ = Role::Home;
-  saveStorage();
-  state_ = State::HomePairing;
-  lastHomeAdvertisementAt_ = 0;
-  Serial.println("This node is the home node");
+  pairingStateMachine_.becomeHome();
 }
 
 void NodeNetwork::finishRemotePairing(const uint8_t homeMac[6])
 {
-  storage_ = {};
-  storage_.role = static_cast<uint8_t>(Role::Remote);
-  memcpy(storage_.homeMac, homeMac, sizeof(storage_.homeMac));
-  storedRole_ = Role::Remote;
-  saveStorage();
-  addEspNowPeer(storage_.homeMac);
-  state_ = State::Normal;
-  Serial.println("Paired as a remote node");
+  peerState_ = {};
+  memcpy(peerState_.homeMac, homeMac, sizeof(peerState_.homeMac));
+  role_ = Role::Remote;
+  addEspNowPeer(peerState_.homeMac);
+  Console.println("Paired as a remote node");
+  pairingStateMachine_.acceptPairing();
+  savePairingStorage();
+}
+
+void NodeNetwork::finishPairingWindow()
+{
+  Console.println("Pairing window ended");
+  pairingStateMachine_.finishPairingWindow();
+}
+
+bool NodeNetwork::loadPairingStorage()
+{
+  Preferences preferences;
+  preferences.begin(PairingStorageNamespace, true);
+
+  PairingStorage storage = {};
+  const bool hasStorage = preferences.getBytesLength(PairingStorageKey) == sizeof(storage) &&
+                          preferences.getBytes(PairingStorageKey, &storage, sizeof(storage)) == sizeof(storage);
+  preferences.end();
+
+  if (!hasStorage || storage.peerState.remoteCount > NodeNetworkConfig::MaxRemoteNodes)
+    return false;
+
+  const Role storedRole = static_cast<Role>(storage.role);
+  if (storedRole != Role::Home && storedRole != Role::Remote)
+    return false;
+
+  peerState_ = storage.peerState;
+  role_ = storedRole;
+  if (!addStoredPeers())
+  {
+    peerState_ = {};
+    role_ = Role::Unconfigured;
+    return false;
+  }
+
+  if (role_ == Role::Home)
+    pairingStateMachine_.restorePairedHome();
+  else
+    pairingStateMachine_.restorePairedRemote();
+
+  Console.println("Saved pairing restored");
+  return true;
+}
+
+bool NodeNetwork::savePairingStorage() const
+{
+  const bool homePairingComplete = role_ == Role::Home && peerState_.remoteCount > 0;
+  const bool remotePairingComplete = role_ == Role::Remote;
+  if (!homePairingComplete && !remotePairingComplete)
+    return false;
+
+  PairingStorage storage = {static_cast<uint8_t>(role_), peerState_};
+  Preferences preferences;
+  preferences.begin(PairingStorageNamespace, false);
+  const size_t bytesWritten = preferences.putBytes(PairingStorageKey, &storage, sizeof(storage));
+  preferences.end();
+
+  if (bytesWritten != sizeof(storage))
+  {
+    Console.println("Failed to save pairing");
+    return false;
+  }
+
+  Console.println("Pairing saved");
+  return true;
+}
+
+void NodeNetwork::clearPairingStorage()
+{
+  Preferences preferences;
+  preferences.begin(PairingStorageNamespace, false);
+  preferences.remove(PairingStorageKey);
+  preferences.end();
+}
+
+bool NodeNetwork::addStoredPeers()
+{
+  if (role_ == Role::Remote)
+    return addEspNowPeer(peerState_.homeMac);
+
+  if (role_ == Role::Home)
+  {
+    for (uint8_t i = 0; i < peerState_.remoteCount; ++i)
+      if (!addEspNowPeer(peerState_.remoteNodes[i].mac))
+        return false;
+  }
+
+  return true;
 }
 
 void NodeNetwork::sendHomeAdvertisement()
@@ -258,7 +290,7 @@ void NodeNetwork::sendHomeAdvertisement()
 void NodeNetwork::updateLocalInputState()
 {
   const bool buttonPressed = debouncedInputPressed_;
-  if (storedRole_ != Role::Remote)
+  if (role_ != Role::Remote)
   {
     homeInputState_.buttonPressed = buttonPressed;
     return;
@@ -269,7 +301,7 @@ void NodeNetwork::updateLocalInputState()
 
   remoteLocalInputState_.buttonPressed = buttonPressed;
 
-  if (state_ == State::Normal)
+  if (pairingStateMachine_.isPairedRemote())
   {
     const uint8_t payload[] = {static_cast<uint8_t>(buttonPressed)};
     remoteInputStateSent_ = sendToHome(InputStateEventType, payload, sizeof(payload));
@@ -294,11 +326,11 @@ void NodeNetwork::inputReleasedHandler(Button2& button)
 // Update the state owned by the home node for one of its paired remote nodes.
 void NodeNetwork::updateRemoteInputState(const uint8_t sourceMac[6], bool buttonPressed)
 {
-  for (uint8_t i = 0; i < storage_.remoteCount; ++i)
+  for (uint8_t i = 0; i < peerState_.remoteCount; ++i)
   {
-    if (sameMac(storage_.remoteNodes[i].mac, sourceMac))
+    if (sameMac(peerState_.remoteNodes[i].mac, sourceMac))
     {
-      storage_.remoteNodes[i].inputState.buttonPressed = buttonPressed;
+      peerState_.remoteNodes[i].inputState.buttonPressed = buttonPressed;
       return;
     }
   }
@@ -312,11 +344,11 @@ void NodeNetwork::updateStatusLed()
 
   if (isPairing())
     isOn = (now / NodeNetworkConfig::StatusLedPairingFlashPeriodMs) % 2 == 0;
-  else if (storedRole_ == Role::Home)
+  else if (role_ == Role::Home)
     isOn = true;
-  else if (storedRole_ == Role::Remote)
+  else if (role_ == Role::Remote)
     isOn = now % NodeNetworkConfig::StatusLedHeartbeatPeriodMs < NodeNetworkConfig::StatusLedHeartbeatOnDurationMs;
-  else if (storedRole_ == Role::Unconfigured)
+  else if (role_ == Role::Unconfigured)
     isOn = false;
 
 
@@ -332,7 +364,7 @@ void NodeNetwork::handlePacket(const QueuedPacket& packet)
   if (header->marker != PacketMarker)
     return;
 
-  if (header->type == PacketType::HomeAdvertisement && state_ == State::SeekingHome)
+  if (header->type == PacketType::HomeAdvertisement && pairingStateMachine_.isSeekingHome())
   {
     // The first discovered home is the only pairing target for this boot window.
     if (isSelectedHome(packet.sourceMac))
@@ -343,25 +375,24 @@ void NodeNetwork::handlePacket(const QueuedPacket& packet)
 
     PacketHeader response = {PacketMarker, PacketType::PairRequest};
     esp_now_send(selectedHomeMac_, reinterpret_cast<const uint8_t*>(&response), sizeof(response));
-    Serial.println("Home node found; pairing requested");
+    Console.println("Home node found; pairing requested");
     return;
   }
 
-  if (header->type == PacketType::PairRequest && state_ == State::HomePairing)
+  if (header->type == PacketType::PairRequest && pairingStateMachine_.isHomePairing())
   {
-    if (!isKnownRemote(packet.sourceMac) && storage_.remoteCount < NodeNetworkConfig::MaxRemoteNodes)
+    if (!isKnownRemote(packet.sourceMac) && peerState_.remoteCount < NodeNetworkConfig::MaxRemoteNodes)
     {
-      PairingStorage::RemoteNode& remote = storage_.remoteNodes[storage_.remoteCount];
+      PeerState::RemoteNode& remote = peerState_.remoteNodes[peerState_.remoteCount];
       memcpy(remote.mac, packet.sourceMac, sizeof(remote.mac));
       remote.inputState = InputState(false, false);
-      ++storage_.remoteCount;
-      saveStorage();
+      ++peerState_.remoteCount;
       addEspNowPeer(packet.sourceMac);
-      Serial.println("Remote node paired");
+      Console.println("Remote node paired");
     }
     else if (!isKnownRemote(packet.sourceMac))
     {
-      Serial.println("Remote pairing rejected; node limit reached");
+      Console.println("Remote pairing rejected; node limit reached");
     }
 
     if (isKnownRemote(packet.sourceMac))
@@ -372,7 +403,7 @@ void NodeNetwork::handlePacket(const QueuedPacket& packet)
     return;
   }
 
-  if (header->type == PacketType::PairAccepted && state_ == State::SeekingHome && isSelectedHome(packet.sourceMac))
+  if (header->type == PacketType::PairAccepted && pairingStateMachine_.isSeekingHome() && isSelectedHome(packet.sourceMac))
   {
     finishRemotePairing(packet.sourceMac);
     return;
@@ -392,29 +423,29 @@ void NodeNetwork::handleEvent(const QueuedPacket& packet)
   if (event->payloadLength > NodeNetworkConfig::MaxEventPayloadBytes || packet.length != expectedLength)
     return;
 
-  // Runtime events are only accepted from the peer relationship stored locally.
-  const bool accepted = (storedRole_ == Role::Home && isKnownRemote(packet.sourceMac)) ||
-                        (storedRole_ == Role::Remote && isSelectedHome(packet.sourceMac));
+  // Runtime events are accepted only from peers paired during this session.
+  const bool accepted = (role_ == Role::Home && isKnownRemote(packet.sourceMac)) ||
+                        (role_ == Role::Remote && isSelectedHome(packet.sourceMac));
   if (accepted)
   {
     // Include enough context to identify the peer and decode input events on serial.
     if (event->eventType == InputStateEventType && event->payloadLength == 1 && event->payload[0] <= 1)
     {
-      Serial.printf("ESP-NOW event: source=%02X:%02X:%02X:%02X:%02X:%02X type=input-state button=%s\n",
+      Console.printf("ESP-NOW event: source=%02X:%02X:%02X:%02X:%02X:%02X type=input-state button=%s\n",
                     packet.sourceMac[0], packet.sourceMac[1], packet.sourceMac[2],
                     packet.sourceMac[3], packet.sourceMac[4], packet.sourceMac[5],
                     event->payload[0] == 0 ? "up" : "down");
     }
     else
     {
-      Serial.printf("ESP-NOW event: source=%02X:%02X:%02X:%02X:%02X:%02X type=%u payload=%u bytes\n",
+      Console.printf("ESP-NOW event: source=%02X:%02X:%02X:%02X:%02X:%02X type=%u payload=%u bytes\n",
                     packet.sourceMac[0], packet.sourceMac[1], packet.sourceMac[2],
                     packet.sourceMac[3], packet.sourceMac[4], packet.sourceMac[5],
                     event->eventType, event->payloadLength);
     }
 
     // Input-state events are consumed by the home before application events are dispatched.
-    if (storedRole_ == Role::Home && event->eventType == InputStateEventType)
+    if (role_ == Role::Home && event->eventType == InputStateEventType)
     {
       if (event->payloadLength == 1 && event->payload[0] <= 1)
         updateRemoteInputState(packet.sourceMac, event->payload[0] != 0);
@@ -438,7 +469,7 @@ bool NodeNetwork::addEspNowPeer(const uint8_t mac[6])
   peer.encrypt = false;
   if (esp_now_add_peer(&peer) != ESP_OK)
   {
-    Serial.println("Failed to add ESP-NOW peer");
+    Console.println("Failed to add ESP-NOW peer");
     return false;
   }
 
@@ -447,11 +478,11 @@ bool NodeNetwork::addEspNowPeer(const uint8_t mac[6])
 
 bool NodeNetwork::isKnownRemote(const uint8_t mac[6]) const
 {
-  if (storedRole_ != Role::Home)
+  if (role_ != Role::Home)
     return false;
 
-  for (uint8_t i = 0; i < storage_.remoteCount; ++i)
-    if (sameMac(storage_.remoteNodes[i].mac, mac))
+  for (uint8_t i = 0; i < peerState_.remoteCount; ++i)
+    if (sameMac(peerState_.remoteNodes[i].mac, mac))
       return true;
 
   return false;
@@ -460,7 +491,12 @@ bool NodeNetwork::isKnownRemote(const uint8_t mac[6]) const
 bool NodeNetwork::isSelectedHome(const uint8_t mac[6]) const
 {
   return sameMac(selectedHomeMac_, mac) ||
-         (storedRole_ == Role::Remote && sameMac(storage_.homeMac, mac));
+         (role_ == Role::Remote && sameMac(peerState_.homeMac, mac));
+}
+
+bool NodeNetwork::sameMac(const uint8_t left[6], const uint8_t right[6]) const
+{
+  return memcmp(left, right, 6) == 0;
 }
 
 bool NodeNetwork::canSendEvent(const uint8_t* payload, uint8_t payloadLength) const
@@ -483,14 +519,14 @@ bool NodeNetwork::sendEvent(const uint8_t destinationMac[6], uint8_t eventType,
   // Include the destination and decoded input state to mirror received-event logging.
   if (eventType == InputStateEventType && payloadLength == 1 && payload[0] <= 1)
   {
-    Serial.printf("ESP-NOW event sent: destination=%02X:%02X:%02X:%02X:%02X:%02X type=input-state button=%s\n",
+    Console.printf("ESP-NOW event sent: destination=%02X:%02X:%02X:%02X:%02X:%02X type=input-state button=%s\n",
                   destinationMac[0], destinationMac[1], destinationMac[2],
                   destinationMac[3], destinationMac[4], destinationMac[5],
                   payload[0] == 0 ? "up" : "down");
   }
   else
   {
-    Serial.printf("ESP-NOW event sent: destination=%02X:%02X:%02X:%02X:%02X:%02X type=%u payload=%u bytes\n",
+    Console.printf("ESP-NOW event sent: destination=%02X:%02X:%02X:%02X:%02X:%02X type=%u payload=%u bytes\n",
                   destinationMac[0], destinationMac[1], destinationMac[2],
                   destinationMac[3], destinationMac[4], destinationMac[5],
                   eventType, payloadLength);
@@ -498,7 +534,7 @@ bool NodeNetwork::sendEvent(const uint8_t destinationMac[6], uint8_t eventType,
 
   if (esp_now_send(destinationMac, reinterpret_cast<const uint8_t*>(&packet), length) != ESP_OK)
   {
-    Serial.println("ESP-NOW event send failed");
+    Console.println("ESP-NOW event send failed");
     return false;
   }
 
